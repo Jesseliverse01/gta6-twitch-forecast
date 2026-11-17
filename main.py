@@ -11,41 +11,58 @@ How it forecasts
 A launch day's shape is driven by the unlock wave: the game unlocks at
 midnight local time, country by country, so the UTC day starts with only New
 Zealand and Australia playing, dips while Europe sleeps, then climbs as
-Europe and the Americas unlock, peaking in the evening. The shape scales
-with the launch: a small launch surges many times over its first hour, a
-huge one barely doubles. So the model is anchored on the case's own hour-1
-print and borrows the shape from the most similar past launches:
+Europe and the Americas unlock, peaking in the evening. The shape also
+depends strongly on the launch's size: a small launch surges many times over
+its first hour, a huge one barely grows at all. Across past launches the
+peak ratio falls almost in inverse proportion to the hour-1 count
+(correlation about -0.94 in log space), so the peak hour's count is nearly
+the same whatever the launch's size. The forecast is therefore anchored on
+the case's own hour-1 print and borrows the shape from past launches in two
+ways, blended evenly:
 
-1. Build the pool of usable comparables: a launch counts when its hourly
-   series covers the whole release day (hours 1 to 24) and its hour-1 count
-   is at least 100 viewers. Launches the case itself flags as a weak
-   analogue or as early-access contaminated (their hour-1 counts are
-   inflated by people playing days early, which flattens their shape) are
-   left out; if fewer than 13 clean launches remain, the flagged ones are
-   allowed back in rather than forecasting from too little data.
-2. Pick the 13 comparables whose hour-1 count is closest to this case's
-   hour-1 print, in log space. Similarity in size is similarity in shape.
-3. For each hour h, take the log-ratio log(V(h) / V(1)) across those 13
-   launches. Its mean is the median log-ratio; its standard deviation is
-   the spread. The quantiles are a log-normal around that mean:
-   q_tau = p1 * exp(mu_h + z_tau * sd_h), with z the standard normal's
-   quantiles. The spread is shrunk by 0.85, because a pool of launches
-   with different unlock patterns overstates the dispersion of any one
-   launch, and floored at 0.30 log units so the band never collapses.
-4. If no comparable is usable at all, fall back to persistence: every hour
-   stays at the hour-1 print with a widening log-normal spread. The output
-   is always a valid forecast.
+1. Neighbours. The 8 comparables whose hour-1 count is closest to this
+   case's hour-1 print, in log space. For each hour, the log-ratio
+   log(V(h) / V(1)) across those 8 has a mean (the median log-ratio) and a
+   standard deviation (the spread). The quantiles are a log-normal around
+   that mean: q_tau = p1 * exp(mu + z_tau * sd).
+2. A size regression. For each hour, a weighted linear regression of the
+   log-ratio on log hour-1 count across the usable pool, with Gaussian
+   weights that favour launches near this case's size (bandwidth 1.5 in log
+   space). This is the part that extrapolates the size trend: for a launch
+   bigger than any past one it predicts a flatter day than the neighbours
+   alone would, because the trend says the bigger the launch, the flatter
+   the day. Its spread is the weighted residual spread around the line.
+
+The two models' quantiles are blended evenly in log space (their geometric
+mean). The spread of each is shrunk by 0.85, because a pool of launches
+with different unlock patterns overstates the dispersion of any one launch,
+and floored at 0.30 log units so the band never collapses.
+
+The pool of usable comparables is the case's clean launches: a launch
+counts when its hourly series covers the whole release day (hours 1 to 24)
+and its hour-1 count is at least 100 viewers. Launches the case flags as
+weak analogues or as early-access contaminated (their hour-1 counts are
+inflated by people playing days early, which flattens their shape) are left
+out; if fewer than 13 clean launches remain, the flagged ones are allowed
+back in rather than forecasting from too little data.
+
+If no comparable is usable at all, the forecast falls back to persistence:
+every hour stays at the hour-1 print with a widening log-normal spread. The
+output is always a valid forecast.
 
 Why this, and what it scored
 ----------------------------
 Scored on the four practice launches (Marvel's Wolverine, Red Dead
 Redemption 2, God of War Ragnarok, Marvel's Spider-Man 2) against their
 SullyGnome hourly counts, the model reaches a mean pinball loss of about
-0.18, against about 0.39 for the house baseline's persistence forecast.
-The same ranking holds in leave-one-out over the big past launches. The
-numbers come from the comparables the case file itself carries, not from
-any outside data, so the program needs no network and no files beyond its
-case file.
+0.16, against about 0.39 for the house baseline's persistence forecast and
+0.18 for the neighbours-only model it replaces. The gain holds outside the
+practice set: in leave-one-out over the big past launches the blend scores
+about 0.26 against 0.29 for the neighbours-only model, and over the biggest
+launches (hour-1 above 100,000 viewers, the launches most like GTA VI) about
+0.20 against 0.25. The numbers come from the comparables the case file
+itself carries, not from any outside data, so the program needs no network
+and no files beyond its case file.
 
 Determinism: the forecast is a pure function of the case file. No
 randomness, no wall clock, no network, no iteration order that can vary:
@@ -72,14 +89,20 @@ LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
 # Standard normal quantiles at the scored levels.
 Z = [-1.645, -0.674, 0, 0.674, 1.645]
 
-# How many similar launches shape the forecast.
-NEIGHBOURS = 13
+# How many similar launches shape the neighbours' forecast.
+KNN_K = 8
+# Clean launches needed before the flagged ones stay out of the pool.
+POOL_MIN_CLEAN = 13
 # A launch counts as usable only with a real hour-1 count behind it.
 MIN_HOUR1 = 100
 # The spread is shrunk this far: a mixed pool overstates one launch's spread.
 SPREAD_SHRINK = 0.85
 # The spread never falls below this, in log units.
 SPREAD_FLOOR = 0.30
+# Bandwidth of the size regression's Gaussian weights, in log viewers.
+REG_BANDWIDTH = 1.5
+# Weight of the neighbours' model in the blend; the regression takes the rest.
+BLEND_KNN_WEIGHT = 0.5
 # Fallback spread, per square-root hour, when no comparable is usable.
 FALLBACK_SIGMA = 0.15
 # Quantiles are clipped to this range of viewers.
@@ -170,7 +193,7 @@ def usable_pool(case):
             clean.append((comp.get("name", "?"), series))
         else:
             flagged.append((comp.get("name", "?"), series))
-    if len(clean) >= NEIGHBOURS:
+    if len(clean) >= POOL_MIN_CLEAN:
         return clean
     return clean + flagged
 
@@ -182,8 +205,13 @@ def nearest(pool, p1, k):
     return ranked[:k]
 
 
-def shape_quantiles(neighbours, p1, hour):
-    """The five quantiles of hour `hour`'s viewers, from the neighbours."""
+def _normal_quantiles(p1, mu, sd):
+    """The five quantiles of a log-normal around mu with spread sd."""
+    return [p1 * math.exp(mu + z * sd) for z in Z]
+
+
+def neighbours_quantiles(neighbours, p1, hour):
+    """The neighbours' forecast for one hour: log-normal on their log-ratios."""
     logs = [math.log(series[hour] / series[1]) for _, series in neighbours]
     mu = statistics.fmean(logs)
     if len(logs) > 1:
@@ -191,7 +219,61 @@ def shape_quantiles(neighbours, p1, hour):
     else:
         sd = SPREAD_FLOOR
     sd = max(sd, SPREAD_FLOOR)
-    return [p1 * math.exp(mu + z * sd) for z in Z]
+    return _normal_quantiles(p1, mu, sd)
+
+
+def _weighted_line(xs, ys, weights):
+    """Weighted least squares of y on x. Returns (intercept, slope, residuals)."""
+    total = sum(weights)
+    mean_x = sum(x * w for x, w in zip(xs, weights)) / total
+    mean_y = sum(y * w for y, w in zip(ys, weights)) / total
+    sxx = sum(w * (x - mean_x) ** 2 for x, w in zip(xs, weights))
+    if sxx == 0:
+        slope = 0.0
+    else:
+        slope = (
+            sum(w * (x - mean_x) * (y - mean_y) for x, y, w in zip(xs, ys, weights))
+            / sxx
+        )
+    intercept = mean_y - slope * mean_x
+    residuals = [y - (intercept + slope * x) for x, y in zip(xs, ys)]
+    return intercept, slope, residuals
+
+
+def regression_quantiles(pool, p1, hour):
+    """The size regression's forecast for one hour.
+
+    A weighted line of log-ratio on log hour-1 count, with Gaussian weights
+    favouring launches near this case's size, so the fit is local to the
+    launch's own scale and can extrapolate the size trend past the biggest
+    launch in the pool.
+    """
+    target = math.log(p1)
+    xs = [math.log(series[1]) for _, series in pool]
+    ys = [math.log(series[hour] / series[1]) for _, series in pool]
+    weights = [
+        math.exp(-0.5 * ((x - target) / REG_BANDWIDTH) ** 2) for x in xs
+    ]
+    intercept, slope, residuals = _weighted_line(xs, ys, weights)
+    mu = intercept + slope * target
+    total = sum(weights)
+    variance = sum(w * r * r for w, r in zip(weights, residuals)) / total
+    sd = max(math.sqrt(variance) * SPREAD_SHRINK, SPREAD_FLOOR)
+    return _normal_quantiles(p1, mu, sd)
+
+
+def shape_quantiles(pool, p1, hour):
+    """The blended forecast for one hour: neighbours and size regression, even."""
+    neighbours = nearest(pool, p1, KNN_K)
+    first = neighbours_quantiles(neighbours, p1, hour)
+    second = regression_quantiles(pool, p1, hour)
+    return [
+        math.exp(
+            BLEND_KNN_WEIGHT * math.log(a)
+            + (1 - BLEND_KNN_WEIGHT) * math.log(b)
+        )
+        for a, b in zip(first, second)
+    ]
 
 
 def fallback_quantiles(p1, hour):
@@ -227,13 +309,12 @@ def forecast_case(case, name):
         p1 = max(1, first["viewers"])
 
     pool = usable_pool(case)
-    neighbours = nearest(pool, p1, NEIGHBOURS) if pool else []
     hours = []
     # Hours 2 to 24, in order, whatever order the case lists them in: the
     # output always carries exactly these 23 rows, each once.
     for hour in range(2, 25):
-        if neighbours:
-            values = shape_quantiles(neighbours, p1, hour)
+        if pool:
+            values = shape_quantiles(pool, p1, hour)
         else:
             values = fallback_quantiles(p1, hour)
         hours.append({"hour": hour, "q": clean_quantiles(values)})
