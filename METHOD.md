@@ -11,7 +11,7 @@ huge one barely grows at all. Across past launches the peak ratio falls
 almost in inverse proportion to the hour-1 count (correlation about -0.94 in
 log space), so the peak hour's count is nearly the same whatever the launch's
 size. The forecast is therefore anchored on the case's own hour-1 print and
-borrows the shape from past launches in two ways, blended evenly.
+borrows the shape from past launches in two ways, blended 25/75.
 
 ## The model
 
@@ -22,10 +22,11 @@ borrows the shape from past launches in two ways, blended evenly.
    if fewer than 13 clean launches remain, the flagged ones come back in.
 2. **Neighbours.** The 8 comparables whose hour-1 count is closest to
    this case's hour-1 print, in log space. For each hour, the log-ratio
-   log(V(h) / V(1)) across those 8 has a mean (the median log-ratio) and a
-   standard deviation (the spread). The forecast is log-normal around that
-   mean: q = p1 * exp(mu + z * sd), with z the standard normal quantiles at
-   0.05, 0.25, 0.5, 0.75 and 0.95.
+   log(V(h) / V(1)) across those 8 has a centre (the median log-ratio, which
+   resists one odd launch pulling the shape) and a standard deviation (the
+   spread). The forecast is log-normal around that centre: q = p1 * exp(mu +
+   z * sd), with z the standard normal quantiles at 0.05, 0.25, 0.5, 0.75
+   and 0.95.
 3. **Size regression.** For each hour, a weighted linear regression of the
    log-ratio on log hour-1 count across the usable pool, with Gaussian
    weights that favour launches near this case's size (bandwidth 1.5 in log
@@ -37,8 +38,10 @@ borrows the shape from past launches in two ways, blended evenly.
    launches' extreme ratios would drag it down and make it predict an
    evening collapse for a huge launch. The Gaussian weights keep the fit
    local to the launch's own scale.
-4. **Blend.** The two models' quantiles are blended evenly in log space
-   (their geometric mean). The spread of each is shrunk by 0.85, because a
+4. **Blend.** The two models' quantiles are blended 25/75 in log space
+   (their geometric mean), leaning on the size regression because it
+   extrapolates the size trend better than neighbours that saturate at the
+   biggest past launch. The spread of each is shrunk by 0.65, because a
    pool of launches with different unlock patterns overstates the
    dispersion of any one launch, and floored at 0.30 log units so the band
    never collapses.
@@ -50,14 +53,14 @@ borrows the shape from past launches in two ways, blended evenly.
 
 Scored against the SullyGnome hourly counts of the four practice launches
 (Marvel's Wolverine, Red Dead Redemption 2, God of War Ragnarok, Marvel's
-Spider-Man 2), the model reaches a mean pinball loss of 0.16, against 0.39
-for the house baseline and 0.18 for the neighbours-only model it replaces.
-The gain is not fitted to those four cases: in leave-one-out over the big
-past launches the blend scores about 0.26 against 0.29 for the
-neighbours-only model, and over the biggest launches (hour-1 above 100,000
-viewers, the launches most like GTA VI) about 0.20 against 0.25. The same
-ranking holds when the four practice launches are added to the pool, as the
-final's case file does. The data is the case file's own comparables, so the
-program needs no network and no files beyond its case file. It is
-deterministic: a pure function of the case file, so two runs write the same
-bytes.
+Spider-Man 2), the model reaches a mean pinball loss of 0.145, against 0.39
+for the house baseline and 0.16 for the previous version's even blend. The
+gain is not fitted to those four cases: in leave-one-out over the augmented
+pool (the case's clean launches plus the four practice launches, as the
+final's case file does) the blend scores about 0.39 against 0.40 for the
+previous version, about 0.24 over the big launches and about 0.18 over the
+biggest launches (hour-1 above 100,000 viewers, the launches most like GTA
+VI), all better than the previous version. The data is the case file's own
+comparables, so the program needs no network and no files beyond its case
+file. It is deterministic: a pure function of the case file, so two runs
+write the same bytes.

@@ -18,13 +18,14 @@ peak ratio falls almost in inverse proportion to the hour-1 count
 (correlation about -0.94 in log space), so the peak hour's count is nearly
 the same whatever the launch's size. The forecast is therefore anchored on
 the case's own hour-1 print and borrows the shape from past launches in two
-ways, blended evenly:
+ways, blended 25/75:
 
 1. Neighbours. The 8 comparables whose hour-1 count is closest to this
    case's hour-1 print, in log space. For each hour, the log-ratio
-   log(V(h) / V(1)) across those 8 has a mean (the median log-ratio) and a
-   standard deviation (the spread). The quantiles are a log-normal around
-   that mean: q_tau = p1 * exp(mu + z_tau * sd).
+   log(V(h) / V(1)) across those 8 has a centre (the median log-ratio, which
+   resists one odd launch pulling the shape) and a standard deviation (the
+   spread). The quantiles are a log-normal around that centre: q_tau = p1 *
+   exp(mu + z_tau * sd).
 2. A size regression. For each hour, a weighted linear regression of the
    log-ratio on log hour-1 count across the usable pool, with Gaussian
    weights that favour launches near this case's size (bandwidth 1.5 in log
@@ -33,10 +34,12 @@ ways, blended evenly:
    alone would, because the trend says the bigger the launch, the flatter
    the day. Its spread is the weighted residual spread around the line.
 
-The two models' quantiles are blended evenly in log space (their geometric
-mean). The spread of each is shrunk by 0.85, because a pool of launches
-with different unlock patterns overstates the dispersion of any one launch,
-and floored at 0.30 log units so the band never collapses.
+The two models' quantiles are blended 25/75 in log space (their geometric
+mean), leaning on the size regression because it extrapolates the size trend
+better than neighbours that saturate at the biggest past launch. The spread
+of each is shrunk by 0.65, because a pool of launches with different unlock
+patterns overstates the dispersion of any one launch, and floored at 0.30
+log units so the band never collapses.
 
 The pool of usable comparables is the case's clean launches: a launch
 counts when its hourly series covers the whole release day (hours 1 to 24)
@@ -55,14 +58,16 @@ Why this, and what it scored
 Scored on the four practice launches (Marvel's Wolverine, Red Dead
 Redemption 2, God of War Ragnarok, Marvel's Spider-Man 2) against their
 SullyGnome hourly counts, the model reaches a mean pinball loss of about
-0.16, against about 0.39 for the house baseline's persistence forecast and
-0.18 for the neighbours-only model it replaces. The gain holds outside the
-practice set: in leave-one-out over the big past launches the blend scores
-about 0.26 against 0.29 for the neighbours-only model, and over the biggest
-launches (hour-1 above 100,000 viewers, the launches most like GTA VI) about
-0.20 against 0.25. The numbers come from the comparables the case file
-itself carries, not from any outside data, so the program needs no network
-and no files beyond its case file.
+0.145, against about 0.39 for the house baseline's persistence forecast,
+0.16 for the previous version's even blend, and 0.18 for the neighbours-only
+model. The gain holds outside the practice set: in leave-one-out over the
+augmented pool (the case's clean launches plus the four practice launches)
+the blend scores about 0.39 against 0.40 for the previous version, about
+0.24 over the big launches and about 0.18 over the biggest launches
+(hour-1 above 100,000 viewers, the launches most like GTA VI), all better
+than the previous version. The numbers come from the comparables the case
+file itself carries, not from any outside data, so the program needs no
+network and no files beyond its case file.
 
 Determinism: the forecast is a pure function of the case file. No
 randomness, no wall clock, no network, no iteration order that can vary:
@@ -96,13 +101,13 @@ POOL_MIN_CLEAN = 13
 # A launch counts as usable only with a real hour-1 count behind it.
 MIN_HOUR1 = 100
 # The spread is shrunk this far: a mixed pool overstates one launch's spread.
-SPREAD_SHRINK = 0.85
+SPREAD_SHRINK = 0.65
 # The spread never falls below this, in log units.
 SPREAD_FLOOR = 0.30
 # Bandwidth of the size regression's Gaussian weights, in log viewers.
 REG_BANDWIDTH = 1.5
 # Weight of the neighbours' model in the blend; the regression takes the rest.
-BLEND_KNN_WEIGHT = 0.5
+BLEND_KNN_WEIGHT = 0.25
 # Fallback spread, per square-root hour, when no comparable is usable.
 FALLBACK_SIGMA = 0.15
 # Quantiles are clipped to this range of viewers.
@@ -211,9 +216,13 @@ def _normal_quantiles(p1, mu, sd):
 
 
 def neighbours_quantiles(neighbours, p1, hour):
-    """The neighbours' forecast for one hour: log-normal on their log-ratios."""
+    """The neighbours' forecast for one hour: log-normal on their log-ratios.
+
+    The centre is the median log-ratio: one odd launch in the eight must not
+    pull the shape the way a mean lets it.
+    """
     logs = [math.log(series[hour] / series[1]) for _, series in neighbours]
-    mu = statistics.fmean(logs)
+    mu = statistics.median(logs)
     if len(logs) > 1:
         sd = statistics.stdev(logs) * SPREAD_SHRINK
     else:
@@ -263,7 +272,7 @@ def regression_quantiles(pool, p1, hour):
 
 
 def shape_quantiles(pool, p1, hour):
-    """The blended forecast for one hour: neighbours and size regression, even."""
+    """The blended forecast for one hour: neighbours 25%, size regression 75%."""
     neighbours = nearest(pool, p1, KNN_K)
     first = neighbours_quantiles(neighbours, p1, hour)
     second = regression_quantiles(pool, p1, hour)
