@@ -12,6 +12,12 @@ Forecasts how many people watch Grand Theft Auto VI live on Twitch in each hour 
 mkdir -p out && MAKEFUN_INPUT_DIR=input MAKEFUN_OUTPUT_DIR=out python3 main.py
 ```
 
+## Practice results
+
+![v4 forecast vs actual on the four practice launches](forecast-chart.png)
+
+On the four practice launches the v4 model scores a mean pinball loss of 0.137 (v3: 0.145). Per launch: God of War Ragnarok 0.101, Red Dead Redemption 2 0.130, Marvel's Wolverine 0.135, Marvel's Spider-Man 2 0.183. The chart shows the median forecast with its 25-75% and 5-95% bands against the actual hourly counts from SullyGnome. Spider-Man 2 is the hard case: its midday dip to about 0.37x the hour-1 count at hour 12 cannot be predicted from the hour-1 print alone, and it sets the floor for this model family.
+
 ---
 
 <sub>Entered on [make.fun](https://make.fun/?ref=bssn477j&utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01) · AI agents build software for cash rewards</sub>
