@@ -28,18 +28,23 @@ ways, blended 25/75:
    exp(mu + z_tau * sd).
 2. A size regression. For each hour, a weighted linear regression of the
    log-ratio on log hour-1 count across the usable pool, with Gaussian
-   weights that favour launches near this case's size (bandwidth 1.5 in log
+   weights that favour launches near this case's size (bandwidth 2.0 in log
    space). This is the part that extrapolates the size trend: for a launch
    bigger than any past one it predicts a flatter day than the neighbours
    alone would, because the trend says the bigger the launch, the flatter
    the day. Its spread is the weighted residual spread around the line.
 
-The two models' quantiles are blended 25/75 in log space (their geometric
-mean), leaning on the size regression because it extrapolates the size trend
-better than neighbours that saturate at the biggest past launch. The spread
-of each is shrunk by 0.65, because a pool of launches with different unlock
-patterns overstates the dispersion of any one launch, and floored at 0.30
-log units so the band never collapses.
+The two models are combined in two parts, not one: the centre is the
+25/75 blend of the neighbours' median and the regression's fitted value
+(the regression takes the larger share because it extrapolates the size
+trend better than neighbours that saturate at the biggest past launch),
+while the spread comes entirely from the neighbours. The regression's
+residual spread is a smoothed quantity over the whole pool, and it
+overstates how much any one launch can deviate; the neighbours' local
+dispersion is the honest spread for a launch of this size. The spread is
+shrunk by 0.55, because a pool of launches with different unlock patterns
+overstates the dispersion of any one launch, and floored at 0.30 log units
+so the band never collapses.
 
 The pool of usable comparables is the case's clean launches: a launch
 counts when its hourly series covers the whole release day (hours 1 to 24)
@@ -58,16 +63,16 @@ Why this, and what it scored
 Scored on the four practice launches (Marvel's Wolverine, Red Dead
 Redemption 2, God of War Ragnarok, Marvel's Spider-Man 2) against their
 SullyGnome hourly counts, the model reaches a mean pinball loss of about
-0.145, against about 0.39 for the house baseline's persistence forecast,
-0.16 for the previous version's even blend, and 0.18 for the neighbours-only
-model. The gain holds outside the practice set: in leave-one-out over the
-augmented pool (the case's clean launches plus the four practice launches)
-the blend scores about 0.39 against 0.40 for the previous version, about
-0.24 over the big launches and about 0.18 over the biggest launches
-(hour-1 above 100,000 viewers, the launches most like GTA VI), all better
-than the previous version. The numbers come from the comparables the case
-file itself carries, not from any outside data, so the program needs no
-network and no files beyond its case file.
+0.137, against about 0.39 for the house baseline's persistence forecast,
+0.145 for the previous version, and 0.16 for the version before that. The
+gain holds outside the practice set: in leave-one-out over the augmented
+pool (the case's clean launches plus the four practice launches) the blend
+scores about 0.387 against 0.391 for the previous version, about 0.238
+over the big launches and about 0.176 over the biggest launches (hour-1
+above 100,000 viewers, the launches most like GTA VI), all better than the
+previous version. The numbers come from the comparables the case file
+itself carries, not from any outside data, so the program needs no network
+and no files beyond its case file.
 
 Determinism: the forecast is a pure function of the case file. No
 randomness, no wall clock, no network, no iteration order that can vary:
@@ -101,13 +106,19 @@ POOL_MIN_CLEAN = 13
 # A launch counts as usable only with a real hour-1 count behind it.
 MIN_HOUR1 = 100
 # The spread is shrunk this far: a mixed pool overstates one launch's spread.
-SPREAD_SHRINK = 0.65
+SPREAD_SHRINK = 0.55
 # The spread never falls below this, in log units.
 SPREAD_FLOOR = 0.30
 # Bandwidth of the size regression's Gaussian weights, in log viewers.
-REG_BANDWIDTH = 1.5
-# Weight of the neighbours' model in the blend; the regression takes the rest.
+REG_BANDWIDTH = 2.0
+# Weight of the neighbours' model in the centre blend; the regression takes
+# the rest.
 BLEND_KNN_WEIGHT = 0.25
+# Weight of the neighbours' spread in the spread blend; the regression's
+# residual spread takes the rest. At 1.0 the spread comes entirely from the
+# neighbours: their local dispersion is the honest spread for a launch of
+# this size, while the regression's smoothed residual spread overstates it.
+BLEND_KNN_SD_WEIGHT = 1.0
 # Fallback spread, per square-root hour, when no comparable is usable.
 FALLBACK_SIGMA = 0.15
 # Quantiles are clipped to this range of viewers.
@@ -215,11 +226,11 @@ def _normal_quantiles(p1, mu, sd):
     return [p1 * math.exp(mu + z * sd) for z in Z]
 
 
-def neighbours_quantiles(neighbours, p1, hour):
-    """The neighbours' forecast for one hour: log-normal on their log-ratios.
+def neighbours_mu_sd(neighbours, p1, hour):
+    """The neighbours' centre and spread for one hour.
 
     The centre is the median log-ratio: one odd launch in the eight must not
-    pull the shape the way a mean lets it.
+    pull the shape the way a mean lets it. Returns (mu, sd) in log units.
     """
     logs = [math.log(series[hour] / series[1]) for _, series in neighbours]
     mu = statistics.median(logs)
@@ -228,7 +239,7 @@ def neighbours_quantiles(neighbours, p1, hour):
     else:
         sd = SPREAD_FLOOR
     sd = max(sd, SPREAD_FLOOR)
-    return _normal_quantiles(p1, mu, sd)
+    return mu, sd
 
 
 def _weighted_line(xs, ys, weights):
@@ -249,13 +260,13 @@ def _weighted_line(xs, ys, weights):
     return intercept, slope, residuals
 
 
-def regression_quantiles(pool, p1, hour):
-    """The size regression's forecast for one hour.
+def regression_mu_sd(pool, p1, hour):
+    """The size regression's centre and spread for one hour.
 
     A weighted line of log-ratio on log hour-1 count, with Gaussian weights
     favouring launches near this case's size, so the fit is local to the
     launch's own scale and can extrapolate the size trend past the biggest
-    launch in the pool.
+    launch in the pool. Returns (mu, sd) in log units.
     """
     target = math.log(p1)
     xs = [math.log(series[1]) for _, series in pool]
@@ -268,21 +279,23 @@ def regression_quantiles(pool, p1, hour):
     total = sum(weights)
     variance = sum(w * r * r for w, r in zip(weights, residuals)) / total
     sd = max(math.sqrt(variance) * SPREAD_SHRINK, SPREAD_FLOOR)
-    return _normal_quantiles(p1, mu, sd)
+    return mu, sd
 
 
 def shape_quantiles(pool, p1, hour):
-    """The blended forecast for one hour: neighbours 25%, size regression 75%."""
+    """The blended forecast for one hour.
+
+    The centre blends the neighbours' median with the regression's fitted
+    value, 25/75. The spread blends the two spreads with
+    BLEND_KNN_SD_WEIGHT on the neighbours; at 1.0 the spread comes entirely
+    from the neighbours' local dispersion.
+    """
     neighbours = nearest(pool, p1, KNN_K)
-    first = neighbours_quantiles(neighbours, p1, hour)
-    second = regression_quantiles(pool, p1, hour)
-    return [
-        math.exp(
-            BLEND_KNN_WEIGHT * math.log(a)
-            + (1 - BLEND_KNN_WEIGHT) * math.log(b)
-        )
-        for a, b in zip(first, second)
-    ]
+    mu_knn, sd_knn = neighbours_mu_sd(neighbours, p1, hour)
+    mu_reg, sd_reg = regression_mu_sd(pool, p1, hour)
+    mu = BLEND_KNN_WEIGHT * mu_knn + (1 - BLEND_KNN_WEIGHT) * mu_reg
+    sd = BLEND_KNN_SD_WEIGHT * sd_knn + (1 - BLEND_KNN_SD_WEIGHT) * sd_reg
+    return _normal_quantiles(p1, mu, sd)
 
 
 def fallback_quantiles(p1, hour):
